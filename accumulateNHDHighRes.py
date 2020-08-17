@@ -67,7 +67,7 @@ def readData24k(Catchpath, plusTabPath, floaterVPUPath, VPUzone, rasPath, rasTyp
                 PLUS = PLUS[PLUS['ToVPUID'] == float(VPUzone)]
                 PLUS = PLUS[(PLUS['FromVPUID'] == float(VPUzone)) | (PLUS['FromNHDPID'] == float(0))]
                 plusPath, origName = os.path.split(plusTabPath)
-                PLUS.to_csv(os.path.join(plusPath, "PLUS_"+str(VPUzone)+".csv"))
+                PLUS.to_csv(os.path.join(plusPath, "PLUS_"+str(VPUzone)+".csv"), index=False)
         else:
             PLUS = PLUS[['FEATUREID', 'NextDownID']]
         
