@@ -35,7 +35,7 @@ Purpose: Read all necessary input data and return it. Read in the high res catch
          table with connectivty (nhd high res - PlusFlow, ecoSheds - catchments dbf or flowlines dbf as CSV)
 Params: Catchpath - path to high res catchments (shapefile)
         plusTabPath - path to table with connectivity data (CSV)
-        floaterVPUPath - Table connecting HUC4 zones for NHD High Res data (Created manually - included in NHD PlusFlow?)
+        interVPUPath - Table connecting HUC4 zones for NHD High Res data (Created manually - included in NHD PlusFlow?)
         VPUzone - HUC4 zone ID; Reduce PlusFlow to HUC4 zone (for nhd high res only)
         rasPath - path to raster
         rasType - flag for raster type - 0 for continuous, 1 for classed
@@ -47,7 +47,7 @@ Returns: catch - geodataframe of NHD+ catchments
          shapes - dictionary of fiona geometries for NHD+ catchments
          rasVals - list of unique raster values for classed data (empty list for continuous)
 """        
-def readData24k(Catchpath, plusTabPath, floaterVPUPath, VPUzone, rasPath, rasType, noData, catchName, isECO):
+def readData24k(Catchpath, plusTabPath, interVPUPath, VPUzone, rasPath, rasType, noData, catchName, isECO):
     try:
         print("Reading data...")
         #read catchments as geodataframe
@@ -60,14 +60,12 @@ def readData24k(Catchpath, plusTabPath, floaterVPUPath, VPUzone, rasPath, rasTyp
             catch = catch[['TMPNAME', 'geometry']]
             catch = catch.rename(columns={'TMPNAME':catchName})
             PLUS = PLUS[['FromNHDPID', 'ToNHDPID', 'FromVPUID', 'ToVPUID']]
-            #floaterVPU = pd.read_csv(floaterVPUPath)
-            #PLUS = PLUS.append(floaterVPU, sort=False)
+            #interVPU = pd.read_csv(interVPUPath)
+            #PLUS = PLUS.append(interVPU, sort=False)
             if VPUzone > 0:
                 print("PLUS reduced to zone: ", VPUzone)
                 PLUS = PLUS[PLUS['ToVPUID'] == float(VPUzone)]
                 PLUS = PLUS[(PLUS['FromVPUID'] == float(VPUzone)) | (PLUS['FromNHDPID'] == float(0))]
-                plusPath, origName = os.path.split(plusTabPath)
-                PLUS.to_csv(os.path.join(plusPath, "PLUS_"+str(VPUzone)+".csv"), index=False)
         else:
             PLUS = PLUS[['FEATUREID', 'NextDownID']]
         
@@ -416,11 +414,11 @@ if __name__ == "__main__":
     NHD_SHP = os.path.join(IN_DIR, "Catchments_207_Proj.shp") #Path to Catchments shapefile
     PLUS_TAB = os.path.join(IN_DIR, "PlusFlow_207.csv") #Path to connecitivity data (ecoSheds export catchment or flowlines dbf to csv)
     RAS = os.path.join(IN_DIR, "IMP_P6LU.tif") #path to raster
-    floaterVPUP = os.path.join(IN_DIR, "floaterVPU_HUC4.csv") #path to floaterVPU table; can be ignored if within one HUC4; Not needed for ecoSHEDS
+    interVPUP = os.path.join(IN_DIR, "interVPU_HUC4.csv") #path to interVPU table; can be ignored if within one HUC4; Not needed for ecoSHEDS
     
     #Read data
     startTime = float(time.time())        
-    catch, PLUS, shapes, rasVals = readData24k(NHD_SHP, PLUS_TAB, floaterVPUP, VPUzone, RAS, rasType, noData, catchIDName, isECO)
+    catch, PLUS, shapes, rasVals = readData24k(NHD_SHP, PLUS_TAB, interVPUP, VPUzone, RAS, rasType, noData, catchIDName, isECO)
     lastTime = float(time.time())
     print("\nTime: ", str((lastTime- startTime)/60), " min\n")
 
