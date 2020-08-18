@@ -158,7 +158,7 @@ def calcSum(shapes, PLUS1, RasPath, convFact, noData, toFromNames, isECO, rasVal
     if rasType == 0: #if continuous data -- update list of "unique values" to be the statistic and area
         rasVals = ['Stat', 'Area']
     numClasses = len(rasVals)
-    for cID in no_hw:
+    for cID in NHD_HW:
         upstream = allUpstream(allUp, cID, PLUS, isECO) #all upstream connections
         upCatch = list((set(upstream)&set(allCatch))) #all upstream catchments
         sumDict[float(cID)] = getSumList(sumDict, upCatch, numClasses, convFact, cID) #list of catchment values (original scale) and accumulated values (converted scale)        
