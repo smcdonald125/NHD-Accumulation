@@ -64,6 +64,9 @@ These data will have the accumulated values for user specified fields, with the 
 ### Contact
 
 Sarah McDonald, Geographer, US Geological Survey
+
 Chesapeake Bay Program Office
+
 Lower Mississippi-Gulf Water Science Center
+
 smcdonald@chesapeakebay.net 
