@@ -20,10 +20,13 @@ can be installed using a conda environment with the command: conda install *libr
 
 ## NHDPlusV2
 
-This script requires the NHDPlusV2 catchments and the routing database found here: https://www.sciencebase.gov/catalog/item/5669a79ee4b08895842a1d47
-The routing database can be read in its SASS format, or can be read in as a CSV. The database covers CONUS, and should be reduced to a specified zone if possible.
-The code will produce a CSV of the database with the specified VPU (Vector-Processing Unit) only, if the VPUzone field is set. The produced CSV will only contain
-information required to build the upstream networks.
+This script requires 
+ o NHDPlusV2 catchments
+ o NHDPlusV2 flowlines (needed to remove upstream coastline connections) 
+ o routing database, unzipped nhdplusv2_us_sas7bdat.zip tile found here: https://www.sciencebase.gov/catalog/item/5669a79ee4b08895842a1d47
+  The routing database can be read in its SASS format, or can be read in as a CSV. The database covers CONUS, and should be reduced to a specified zone if possible.
+  The code will produce a CSV of the database with the specified VPU (Vector-Processing Unit) only, if the VPUzone field is set. The produced CSV will only contain
+  information required to build the upstream networks.
 
 ## NHD-HR
 
@@ -32,7 +35,7 @@ The isECO field needs to be set to True if using ecoSHEDs and False if using NHD
 
 ## Accumulated Data
 
-Both scripts can accumulate either a continuous raster or a classified raster. 
+Both scripts can accumulate either a continuous raster or a classified raster. AccumulateNHDPlus can accumulate tabular data, as long as there is a field with the NHD COMID. 
 
 ### Continuous Raster
 
@@ -50,3 +53,7 @@ The result of the statistic, as well as "raster area" (total area according to t
 
 These data will have the total pixel count for each unique class, excluding NoData, recorded and accumulated. The total accumulated
 area for each class is calculated by mutiplying the pixel count with a user-defined conversion factor.
+
+### Tabular Data
+
+These data will have the accumulated values for user specified fields, with the final output having "Ws" in front of the original column name.
