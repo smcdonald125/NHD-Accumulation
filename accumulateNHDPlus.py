@@ -52,6 +52,7 @@ Purpose: Read routing database into a dataframe and return it.
 Params: sassDB - path to routing database (SASS database or CSV)
         VPUzone - VPU zone (from NHD) that the catchments exist in. Used to shrink 
                   routing database from CONUS scale.
+        NHD_lines - path to NHD+ flowlines shapefile
 Returns: db - pandas dataframe of routing database
 """
 def readRouting(sassDB, VPUzone, NHD_lines):
