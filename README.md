@@ -60,3 +60,10 @@ area for each class is calculated by mutiplying the pixel count with a user-defi
 ### Tabular Data
 
 These data will have the accumulated values for user specified fields, with the final output having "Ws" in front of the original column name.
+
+### Contact
+
+Sarah McDonald, Geographer, US Geological Survey
+Chesapeake Bay Program Office
+Lower Mississippi-Gulf Water Science Center
+smcdonald@chesapeakebay.net 
