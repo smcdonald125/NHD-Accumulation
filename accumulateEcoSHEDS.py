@@ -418,9 +418,9 @@ Purpose: Call functions
 """
 if __name__ == "__main__":
     #Data Paths
-    NHD_SHP = r"/media/imagery/usgs_sc/smcdonald/NHDv2_Agg/24k_Beta/ecoSheds/Catchments_POT.shp"
-    RAS = r"/media/imagery/usgs_sc/smcdonald/NHDv2_Agg/IMP_P6LU_5070.tif"
-    OUTPUT_PATH = r"/media/imagery/usgs_sc/smcdonald/NHDv2_Agg/24k_Beta/ecoSheds/"
+    NHD_SHP = r"" #path to catchments shapefile
+    RAS = r"" #path to raster (tif) to summarize
+    OUTPUT_PATH = r"" #path to location to write accumulated data (do not include file name)
 
     #Read input data
     startTime = float(time.time())
