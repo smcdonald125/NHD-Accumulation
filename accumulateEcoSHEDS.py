@@ -21,158 +21,102 @@ import math
 import os
 import time
 import sys
-
+import multiprocessing as mp
+from shapely.geometry import Polygon
 
 ##########################################################################################################
 #################################### READ DATA ###########################################################
 ##########################################################################################################
-
-"""
-Method: readDataEco()
-Purpose: Read ecosheds catchments and create "PlusFlow table" (table with catchment connections) and build
-         dictionary of fiona geometries for each catchment.
-Params: catchPath - path to ecoSHEDs catchments
-        catchName - string of catchment field ID (FEATUREID)
-Returns: PLUS - pandas dataframe of catchment connections
-         shapes - dictionary of catchments geometries
-"""
 def readDataEco(catchPath, catchName):
+    """
+    Method: readDataEco()
+    Purpose: Read ecosheds catchments and create "PlusFlow table" (table with catchment connections) and build
+            dictionary of fiona geometries for each catchment.
+    Params: catchPath - path to ecoSHEDs catchments
+            catchName - string of catchment field ID (FEATUREID)
+    Returns: PLUS - pandas dataframe of catchment connections
+            shapes - dictionary of catchments geometries
+    """
     shapes = {}
+    PLUS_list = []
     if os.path.isfile(catchPath):
-        PLUS = gpd.read_file(catchPath)
-        PLUS = PLUS[['FEATUREID', 'NextDownID']]
-        
+        PLUS = gpd.read_file(catchPath)[['FEATUREID', 'NextDownID']]
         with fiona.open(catchPath, "r") as geoms:
-            shapes = {feature['properties'][catchName]:feature['geometry'] for feature in geoms} #dict of geomtries with FeatureID as key
+            for feature in geoms:
+                shapes[feature['properties'][catchName]] = feature['geometry']  #dict of geomtries with FeatureID as key
     else:
         print("Catchment path does not exist: ", catchPath)
         sys.exit()
 
     return PLUS, shapes
 
-
-"""
-Method: readRas()
-Purpose: Get cell size and unique class values from categorical raster
-Params:  rasPath - path to raster
-         rasType - 0 (continuous raster) or 1 (classified raster)
-Returns: cellSize - cell size of the raster
-         rasVals - list of unique raster values for classed data (empty list for continuous)
-"""
-def readRas(rasPath, rasType):
-    print("Reading raster data...")
+def readRas(rasPath):
+    """
+    Method: readRas()
+    Purpose: Verify path and get cell size and no data for the raster.
+    Params:  rasPath - path to raster
+    Returns: cellSize - cell size of the raster
+             noData - noData value of the raster
+    """
     if os.path.isfile(rasPath):
         with rio.open(rasPath, 'r') as src:
             noData = src.nodatavals
             noData = noData[0]
             t = src.transform
             cellSize = t.a
-            rasVals = []
-            if rasType == 1: #if categorical data
-                src_array = src.read(1)
-                rasVals = list(np.unique(src_array))
-                if noData in rasVals:
-                    rasVals.remove(noData)
 
-        return cellSize, rasVals, noData     
+        return cellSize, noData     
     else:
         print("Invalid file path: ", rasPath)
         sys.exit()
 
-
 ##########################################################################################################
 ############################## ACCUMULATE DATA ###########################################################
 ##########################################################################################################
-
-"""
-Method: generateUpstream()
-Purpose: To compute the complete upstream network for the specified catchment
-Params:  PLUS - dataframe of the routing database
-Returns: toSum - list of complete upstream connections (catchments and flowlines)
-"""
-def generateUpstream(PLUS, toFromNames):
-    print("Finding direct upstream links...")
-    #Create dict of direct upstream connections -- faster than referencing table directly each time
-    allUp = {}
+def generateDirectLinks(PLUS, toFromNames, direction):
+    """
+    Method: generateDirectLinks()
+    Purpose: To compute the complete upstream or downstream network for the specified catchment
+    Params:  PLUS - dataframe of the routing database
+             toFromNames - list with column names; index 0 is downstream connection name, index 1 is current catchment name
+             direction - upstream or downstream
+    Returns: dirLinks - dict of direct network connections in the specified direction
+    """
+    #Create dict of direct connections -- faster than referencing table directly each time
+    dirLinks = {}
     allLines = list(set(list(PLUS[toFromNames[0]] + PLUS[toFromNames[1]])))
     allLines = [float(x) for x in allLines]
     if 0 in allLines:
         allLines.remove(0)
     for cID in allLines:
-        #find direct upstream connections    
-        x = list(PLUS[PLUS[toFromNames[0]] == float(cID)][toFromNames[1]])
+        #find direct connections 
+        if direction == 'downstream':   # accumulate with the flow direction
+            x = list(PLUS[PLUS[toFromNames[0]] == float(cID)][toFromNames[1]]) # list of IDs that are upstream of current cID
+        else: # accumulate against the flow direction
+            x = list(PLUS[PLUS[toFromNames[1]] == float(cID)][toFromNames[0]]) # list of IDs that are downstream of current cID
         x = [float(i) for i in x]
         x = list(set(x))
         if 0 in x:
             x.remove(0)
-        allUp[float(cID)] = x
-    return allUp
+        dirLinks[float(cID)] = x.copy()
+    return dirLinks
 
-
-"""
-Method: accumulate()
-Purpose: accumulate the raster statistics
-Params: convFact - the conversion factor specified by the user
-        rasType - 0 or 1 specifying if raster is continuous or classed
-        rasVals - list containing unique class values for a classed raster (empty list for continuous)
-        allUp - dictionary of direct upstream links
-        sumDict - dictionary where the catchment ID is the key and the data is a list of catchment statistics
-Returns: sumDict - dictionary where the catchment ID is the key and the data is a list of catchment statistics and
-                   accumulated statistics
-"""
-def accumulate(rasType, rasVals, allUp, upstream, sumDict, convFact): #switched allUp with upstream (already built full lists
-#Accumulate statistic for each catchment
-    print("Accumulating...")
-    allCatch = list(sumDict.keys())
-    if rasType == 0: #if continuous data -- update list of "unique values" to be the statistic and area
-        rasVals = ['Stat', 'Area']
-    numClasses = len(rasVals)
-    for s in allCatch:
-        if s not in upstream:
-            upstream[s] = allUpstream(allUp, s, PLUS) #all upstream connections
-        upCatch = list((set(upstream[s])&set(allCatch))) #all upstream catchments
-        sumDict[s] = getSumList(sumDict, upCatch, numClasses, convFact, s) #list of catchment values (original scale) and accumulated values (converted scale)
-    return sumDict, upstream #return all data in dict
-
-
-"""
-Method: getSumList()
-Purpose: Sum each statistic value for all catchments in the upstream network.
-Params: sumDict - dictionary containing catchment statistics
-        toSum - list of upstream catchment IDs
-        numClasses - integer denoting the number of statistics to sum (# of classes for classed data
-                    or 2 for continuous[statistic, area])
-        convFact - the conversion factor to be applied to the accumulated values 
-        curID - the "current" catchment ID
-Returns: allStats - list of catchment statistics and accumulated statistics for the current catchment
-"""
-def getSumList(sumDict, toSum, numClasses, convFact, curID):
-    sums = [0] * numClasses
-    for cID in toSum:
-        if cID in sumDict: #check that upstream catchment is in the dict
-            tmp = sumDict[cID] #get list of all stats for upstream catchment
-            for idx in range(numClasses): #for each class -- sum the data
-                sums[idx] += tmp[idx]
-    for i in range(len(sums)):
-        sums[i] = sums[i] * convFact #convert data
-    allStats = sumDict[curID] + sums #create full list in the order "catchment statistics for each class and accumulated stats for each class"
-    return allStats
-
-"""
-Method: allUpstream()
-Purpose: To compute the complete upstream network for the specified catchment
-Params: allUp - dictionary containing the direct upstream connections for each unique
-                ID in the NHD PlusFLow / ecsheds catchments or flowlines dbf
-        s - the current catchment ID
-        PLUS - dataframe of the connections
-        
-Returns: toSum - list of complete upstream connections (catchments and flowlines)
-"""
-def allUpstream(allUp, s, PLUS):
-    toSum = [float(s)] #was allUp[s] + [s] changed since moving allUp to iterCheck
+def generateNetwork(dirLinks, s, PLUS, direction, toFromNames):
+    """
+    Method: generateNetwork()
+    Purpose: To compute the complete up/down stream network for the specified catchment
+    Params: dirLinks - dictionary containing the direct network connections in the specified direction for each unique
+                    ID in the NHD PlusFLow / ecsheds catchments or flowlines dbf
+            s - the current catchment ID
+            PLUS - dataframe of all connections
+            direction - string, either 'upstream' or 'downstream'
+            toFromNames - list with column names; index 0 is downstream connection name, index 1 is current catchment name
+    Returns: toSum - list of complete up/down stream connections (catchments and flowlines)
+    """
+    toSum = [float(s)]
     new = [float(s)]
     while len(new) > 0:
-        new, x = iterCheck(new, allUp, PLUS) #iterative version of recursive check()
+        new, x, dirLinks = iterCheck(new, dirLinks, PLUS, direction, toFromNames) #iterative version of recursive check()
         if len(x) > 0:
             toSum = list(set(toSum) - set(x))
             new = list(set(new) - set(x))
@@ -180,107 +124,286 @@ def allUpstream(allUp, s, PLUS):
         toSum = toSum + new
     return list(set(toSum))
 
-"""
-Method: iterCheck()
-Purpose: find direct upstream connections for all IDs in a list and build a list
-         of the unique IDs found. Called by allUpstream
-Params: coms - list of IDs to find direct upstream connections of
-        allUp - dictionary containing the direct upstream connections for each unique
-                ID in the NHD PlusFLow / ecsheds catchments or flowlines dbf
-        PLUS - dataframe of the connections
-Returns: new - list of unique upstream catchment IDs
-         notFound - list of unique IDs that did not exist in allUp
-"""
-def iterCheck(coms, allUp, PLUS):
+def iterCheck(coms, dirLinks, PLUS, direction, toFromNames):
+    """
+    Method: iterCheck()
+    Purpose: find direct connections for all IDs in a list and build a list
+            of the unique IDs found. Called by generateNetwork
+    Params: coms - list of IDs to find direct connections of
+            dirLinks - dictionary containing the direct connections in the sprecified direction for each unique
+                    ID in the NHD PlusFLow / ecsheds catchments or flowlines dbf
+            PLUS - dataframe of all connections
+            direction - string of upstream or downstream
+            toFromNames - list with column names; index 0 is downstream connection name, index 1 is current catchment name
+    Returns: new - list of unique upstream catchment IDs
+            notFound - list of unique IDs that did not exist in dirLinks
+            dirLinks - original dictionary, can be updated in this method so need to return any changes
+    """
     new = []
     notFound = []
     for c in coms:
-        if c not in allUp:
-            x = list(PLUS[PLUS['NextDownID'] == c]['FEATUREID'])
+        if c not in dirLinks: # ensure unique ID is in dict - this shouldn't execute
+            if direction == 'downstream':
+                x = list(PLUS[PLUS[toFromNames[0]] == c][toFromNames[1]])
+            else:
+                x = list(PLUS[PLUS[toFromNames[1]] == c][toFromNames[0]])
             x = [float(y) for y in x]
-            allUp[c] = x
-        if c in allUp:
-            if len(allUp[c]) > 0:
-                new = new + allUp[c]
+            dirLinks[c] = x.copy()
+        if c in dirLinks:
+            if len(dirLinks[c]) > 0:
+                new = new + dirLinks[c]
         else:
-            print(c, ": not in allUp")
+            print(c, ": not in dirLinks")
             notFound.append(c)
-    return list(set(new)), notFound
+    return list(set(new)), notFound, dirLinks
+
+def accumulate(args): 
+    """
+    Method: accumulate()
+    Purpose: accumulate the raster statistics
+    Params: allCatch - list of catchment IDs to loop through and accumulate
+            PLUS - dataframe of the routing database
+            dirLinks - dictionary of direct network links
+            network - dictionary storing full network in specified direction
+            sumDict - dictionary storing catchment stats
+                    Continuous data: list where the catchment ID is the key and the data is a list of catchment statistics
+                    Classed data: dataframe of class value and pixel count
+            convFact - the conversion factor specified by the user
+            direction - string upstream or downstream
+            rasType - 0 or 1 specifying if raster is continuous or classed
+            toFromNames - list with column names; index 0 is downstream connection name, index 1 is current catchment name
+    Returns: sumDict - dictionary of catchment statistics and accumulated statistics
+                        Continuous data: list where the catchment ID is the key and the data is a list of catchment statistics
+                        Classed data: dataframe of class value and pixel count
+    """
+    allCatch, PLUS, dirLinks, network, sumDict, convFact, direction, rasType, toFromNames = args
+    #Accumulate statistic for each catchment
+    allSum = list(sumDict)
+    newSum, newUp = {}, {}
+    for s in allCatch:
+        if s not in network:
+            network[s] = generateNetwork(dirLinks, s, PLUS, direction, toFromNames) #all network connections
+            newUp[s] = network[s].copy()
+        upCatch = list((set(network[s])&set(allSum))) #all network catchments that are in sumDict
+        newSum[s] = accumulate_values(sumDict, upCatch, convFact, s, rasType) #list of catchment values (original scale) and accumulated values (converted scale)
+    return newSum, newUp #return all data in dict
+
+def accumulate_mp(rasType, PLUS, dirLinks, network, sumDict, convFact, direction, toFromNames):
+    """
+    Method: accumulate_mp()
+    Purpose: Divide the catchments into chunks and multiprocess the accumulation of raster statistics
+    Params: rasType - 0 or 1 specifying if raster is continuous or classed
+            PLUS - dataframe of the routing database
+            dirLinks - dictionary of direct network links
+            network - dictionary storing full network in specified direction
+            sumDict - dictionary storing catchment stats
+                    Continuous data: list where the catchment ID is the key and the data is a list of catchment statistics
+                    Classed data: dataframe of class value and pixel count
+            convFact - the conversion factor specified by the user
+            direction - string upstream or downstream
+            toFromNames - list with column names; index 0 is downstream connection name, index 1 is current catchment name
+    Returns: sumDict - dictionary of catchment statistics and accumulated statistics
+                        Continuous data: list where the catchment ID is the key and the data is a list of catchment statistics
+                        Classed data: dataframe of class value and pixel count
+            network - dictionary storing full network in specified direction
+    """
+    cpus_minus_1 = mp.cpu_count() - 2
+    if cpus_minus_1 == 0:
+        cpus_minus_1 = 1
+
+    allCatch = list(sumDict)
+    batch_size = len(allCatch) / cpus_minus_1
+    if batch_size % 1 != 0:
+        batch_size = int((batch_size) + 1)
+    else:
+        batch_size = int(batch_size)
+    
+    chunk_iterator = []
+    for i in range(cpus_minus_1):
+        mn, mx = i * batch_size, (i + 1) * batch_size
+        keys = allCatch[mn:mx]
+        gdf_args = keys, PLUS, dirLinks, network, sumDict, convFact, direction, rasType, toFromNames
+        chunk_iterator.append(gdf_args)
+
+    pool = mp.Pool(processes=cpus_minus_1)
+
+    results = dict()
+    totalResults = 0
+    acc_res = pool.map(accumulate, chunk_iterator)
+    for result, upresult in acc_res: #list of dictionaries
+        totalResults += len(result)
+        results.update(result)
+        if totalResults != len(results):
+            print("Dict was not updated")
+        network.update(upresult)
+    pool.close()
+
+    return results, network
+
+def accumulate_values(sumDict, toSum, convFact, curID, rasType):
+    """
+    Method: accumulate_values()
+    Purpose: Sum each statistic value for all catchments in the network.
+    Params: sumDict - dictionary containing catchment statistics
+            toSum - list of network catchment IDs
+            convFact - the conversion factor to be applied to the accumulated values 
+            curID - the "current" catchment ID
+            rasType - 0 or 1 specifying if raster is continuous or classed
+    Returns: allStats - list of catchment statistics and accumulated statistics for the current catchment
+                        OR
+             df - dataframe of accumulated catchment statistics
+    """
+    if rasType == 0: # continuous raster
+        sums = [0] * 2
+        for cID in toSum:
+            if cID in sumDict: #check that network catchment is in the dict
+                tmp = sumDict[cID] #get list of all stats for upstream catchment
+                for idx in range(numClasses): #for each class -- sum the data
+                    sums[idx] += tmp[idx]
+        for i in range(len(sums)):
+            sums[i] = sums[i] * convFact #convert data
+        allStats = sumDict[curID] + sums #create full list in the order "catchment statistics for each class and accumulated stats for each class"
+        return allStats
+    else: # classed data
+        tmp = []
+        for cID in toSum:
+            if cID in sumDict:
+                tmp.append(sumDict[cID].copy()) # add each df to list
+        df = pd.concat(tmp, ignore_index=True) # create one df
+        df.loc[:, 'Values'] = df.Values.astype(int)
+        df = df.groupby('Values').sum() # aggregate by raster value
+        df = df.reset_index()
+        df.rename(columns={'Count':'Acc'}, inplace=True) # already converted to area in agg step at catchment level
+        df = df.merge(sumDict[curID], on='Values', how='outer') # add individiual catchment stats back in
+        df.rename(columns={'Count':'Cat'}, inplace=True)
+        df.fillna(0, inplace=True) # catchments without class get 0
+        return df
 
 ##########################################################################################################
 ############################## SUMMARIZE RASTER ##########################################################
 ##########################################################################################################
-
-"""
-Method: aggregateRas()
-Purpose: calculate raster statistics for each catchment, find the upstream network for each catchment and
-         accumulate the raster statistics.
-Params: shapes - dict of fiona geometries for the catchments
-        stat - statistic type to be calculated for the catchments (only needed for continuous data)
-        rasPath - path to the raster data
-        cellSize - raster cell size
-        rasType - 0 or 1 specifying if raster is continuous or classed
-        rasVals - list containing unique class values for a classed raster (empty list for continuous)
-Returns: sumDict - dictionary where the catchment ID is the key and the data is a list of catchment statistics and
-                   accumulated statistics
-"""
-def aggregateRas(shapes, stat, rasPath, cellSize, rasType, rasVals, noData):
-    print("Calculating Catchment Statistics...")
+def aggregateRas(args):
+    """
+    Method: aggregateRas()
+    Purpose: calculate raster statistics for each catchment, find the upstream network for each catchment and
+            accumulate the raster statistics.
+    Params: keys - list of catchment IDs
+            geoms - list of catchment geometries
+            rasPath - path to the raster data
+            rasType - 0 or 1 specifying if raster is continuous or classed
+            stat - statistic type to be calculated for the catchments (only needed for continuous data)
+            convFact - user defined conversion factor to apply to raster area
+            cellSize - raster cell sized; needed to convert pixel count to area for classed data
+    Returns: sumDict - dictionary of catchment statistics and accumulated statistics
+                        Continuous data: list where the catchment ID is the key and the data is a list of catchment statistics
+                        Classed data: dataframe of class value and pixel count
+    """
+    keys, geoms, rasPath, rasType, stat, convFact, cellSize = args
     sumDict = {}
     #Calculate statistic for each catchment
     with rio.open(rasPath) as src:
+        noData = src.nodatavals[0]
         if rasType == 0: #continuous raster
-            for s in shapes:
-                val, ar = getSum(src, shapes[s], stat, cellSize, noData)
-                sumDict[s] = [float(val), float(ar)]
+            for s in range(len(keys)):
+                val, ar = agg_cont(src, geoms[s], stat, convFact, noData)
+                if ar != -1:
+                    sumDict[keys[s]] = [float(val), float(ar)]
         elif rasType == 1: #classed raster
-            for s in shapes:
-                vals = getSumDis(src, shapes[s], noData, rasVals)
-                sumDict[s] = vals
-    return sumDict
+            for s in range(len(keys)):
+                df = agg_classed(src, geoms[s], noData, cellSize, convFact)
+                if len(df) > 0: # replace with .empty?
+                    sumDict[keys[s]] = df.copy()
+                    del df
+    return sumDict 
 
-"""
-Method: getSumDis()
-Purpose: Mask the classed raster to the current catchment and calculate the cell count
-         for each class. Organize the counts in a list that will align with the total 
-         number of unique classes found in the whole raster.
-Params: src - Rasterio open DatasetReader object for the raster
-        geom - fiona geometry of the catchment
-        noData - raster noData value
-        rasVals - list of all unique classes in the raster
-Returns: finVals - list of class pixel counts within the catchment
-"""         
-def getSumDis(src, geom, noData, rasVals):
+def aggregateRas_mp(shapes, stat, rasPath, rasType, convFact):
+    """
+    Method: aggregateRas_mp()
+    Purpose: Divide catchments up to be multi-processed through statistic calculations.
+    Params: shapes - dict of catchment IDs and geometries
+            stat - statistic type to be calculated for the catchments (only sued for continuous data)
+            rasPath - path to the raster data
+            rasType - 0 or 1 specifying if raster is continuous or classed
+            convFact - use defined conversion factor to apply to raster area
+            cellSize - raster cell sized; needed to convert pixel count to area for classed data
+    Returns: sumDict - dictionary of catchment statistics and accumulated statistics
+                        Continuous data: list where the catchment ID is the key and the data is a list of catchment statistics
+                        Classed data: dataframe of class value and pixel count
+    """
+    rt = time.time()
+    cpus_minus_1 = mp.cpu_count() - 2
+    if cpus_minus_1 == 0:
+        cpus_minus_1 = 1
+
+    pool = mp.Pool(processes=cpus_minus_1)
+
+    batch_size = len(shapes) / cpus_minus_1
+    if batch_size % 1 != 0:
+        batch_size = int((batch_size) + 1)
+    else:
+        batch_size = int(batch_size)
+
+    chunk_iterator = []
+    for i in range(cpus_minus_1): # was num_chunks
+        mn, mx = i * batch_size, (i + 1) * batch_size
+        keys = list(shapes)[mn:mx]
+        geoms = list(shapes.values())[mn:mx]
+        gdf_args = keys, geoms, rasPath, rasType, stat, convFact, cellSize
+        chunk_iterator.append(gdf_args)
+
+    results = pool.map(aggregateRas, chunk_iterator) #list of dictionaries
+    pool.close()
+
+    result = {} #create one dict from list of dicts
+    for d in results:
+        result.update(d)
+    del results
+
+    return result
+         
+def agg_classed(src, geom, noData, cellSize, convFact):
+    """
+    Method: agg_classed()
+    Purpose: Mask the classed raster to the current catchment and calculate the cell count
+            for each class. Store data in a dataframe.
+    Params: src - Rasterio open DatasetReader object for the raster
+            geom - fiona geometry of the catchment
+            noData - raster noData value
+            cellSize - raster cell sized; needed to convert pixel count to area for classed data
+            convFact - user defined conversion factor to apply to area
+    Returns: df - pandas dataframe of raster values and counts
+    """
     try:
         ary, t = rio.mask.mask(src, [geom], crop=True, all_touched=False) #mask by current catchment
         vals, counts = np.unique(ary, return_counts=True) 
         vals = list(vals)
-        counts = list(counts)
+        convFact = convFact * cellSize * cellSize # conversion factor times cell area
+        counts = [x * convFact for x in list(counts)] # convert count to area
         if noData in vals:
             i = vals.index(noData)
             vals.remove(noData) #update to ignore no data value -- 255 hard-coded for NLCD
             del counts[i]
-        finVals = [0 for x in range(len(rasVals))] #empty list with same length as unique raster values
-        for idx, v in enumerate(vals): #for each class found within the catchment
-            finVals[rasVals.index(v)] = counts[idx] #set count of unique class in same order as the unique raster values
-        return  finVals #returns list of counts
+        if len(vals) > 0:
+            df = pd.DataFrame(data={'Values':vals, 'Count': counts})
+            return df
+        else:
+            return pd.DataFrame()
     except:
-        print("Could Not Mask Raster -- Check Projections of Files - exiting")
-        sys.exit()
+        return pd.DataFrame()
 
-"""
-Method: getSum()
-Purpose: Mask the continuous raster to the current catchment and calculate the specified statistic
-         and raster area within the catchment. The statistic options are: MAX, MIN, MEAN, MEDIAN and SUM.
-Params: src - Rasterio open DatasetReader object for the raster
-        geom - fiona geometry of the catchment
-        statType - string denoting the statistic type
-        convFact - conversion factor to be applied to the area
-        noData - raster noData value 
-Returns: catchSum - catchment statistic
-         area - catchment area
-"""
-def getSum(src, geom, stat, convFact, noData):
+def agg_cont(src, geom, stat, convFact, noData):
+    """
+    Method: agg_cont()
+    Purpose: Mask the continuous raster to the current catchment and calculate the specified statistic
+            and raster area within the catchment. The statistic options are: MAX, MIN, MEAN, MEDIAN and SUM.
+    Params: src - Rasterio open DatasetReader object for the raster
+            geom - fiona geometry of the catchment
+            stat - string denoting the statistic type
+            convFact - conversion factor to be applied to the area
+            noData - raster noData value 
+    Returns: catchSum - catchment statistic
+            area - catchment area
+    """
     try:
         ary, t = rio.mask.mask(src, [geom], crop=True, all_touched=False) #mask by current catchment
         area = ((ary != noData).sum())* convFact # number of pixels that are not no data
@@ -301,28 +424,26 @@ def getSum(src, geom, stat, convFact, noData):
             catchSum = float(np.sum(ary))
         return catchSum, area #returns value
     except:
-        print("Could Not Mask Raster -- Check Projections of Files - exiting")
-        sys.exit()
+        return -1, -1
     return 0
 
 ##########################################################################################################
 ############################## WRITE DATA ################################################################
 ##########################################################################################################
-
-"""
-Method: writeTable()
-Purpose: Produce the catchment statistics and accumulated statistics as a CSV file
-Params: sumDict - dictionary with all statistics and accumulated statistics for the catchments
-        path - directory to write the CSV to
-        name - desired filename (must end with .csv)
-        rasVals - list of unique values for classed data (used as column names)
-Returns: None
-"""
-def writeTable(sumDict, path, name, rasVals, catchID):
-    print("Writing CSV...")
-    if name[-4:] == ".csv":
-        if len(rasVals) == 0:
-            rasVals = ['Stat', 'Area']
+def createTable(sumDict, catchID, rasType, statType):
+    """
+    Method: createTable()
+    Purpose: Produce the catchment statistics and accumulated statistics as a dataframe file
+    Params: sumDict - dictionary with all statistics and accumulated statistics for the catchments
+            path - directory to write the CSV to
+            name - desired filename (must end with .csv)
+            catchID - name of catchment ID field
+            rasType - 0 or 1 specifying if raster is continuous or classed
+            statType - string stat for continuous data (SUM, MEDIAN, etc.)
+    Returns: df - dataframe of data
+    """
+    if rasType == 0: #Continuous data has 1 stat and area
+        rasVals = [statType, 'Area']
         cols = [0] * (len(rasVals) * 2) #list to store catchment stat and acc stats
         for idx, v in enumerate(rasVals):
             cols[idx] = str(rasVals[idx])
@@ -332,56 +453,113 @@ def writeTable(sumDict, path, name, rasVals, catchID):
         df = df.sort_values(by=[catchID])
         finCols = [catchID] + cols
         df = df[finCols]
-        fil = os.path.join(path, name)
-        df.to_csv(fil, index=False)
-    else:
-        print("Output File Must be of Type .csv", name)
+    else: # Classed data
+        allData = []
+        for s in sumDict:
+            tmp = sumDict[s].copy() # read in df
+            vals = list(tmp['Values'])
+            cols = [0] * (len(vals) * 2)
+            for idx, v in enumerate(vals):
+                cols[idx] = str(vals[idx])
+                cols[idx+len(vals)] = "Ws_"+str(vals[idx])
+            df = pd.DataFrame(data={'cols':[catchID]+cols}) # put columns in a single column for now
+            df.loc[:, 'count'] = [s] + list(tmp['Cat']) + list(tmp['Acc'])
+            df = df.set_index('cols').T #columns are now columns, ID and values are completed
+            allData.append(df.copy())
+        df = pd.concat(allData, ignore_index=True)
+        df = df.sort_values(by=[catchID])
+        df.fillna(0, inplace=True)
+        cols = [x for x in list(df) if x != catchID]
+        cols.sort() # organize columns
+        cols = [catchID] + cols
+        df = df[cols]
+    return df
 
-"""
-Method: writeShapefile()
-Purpose: Produce the catchment statistics and accumulated statistics as a shapefile. Joins
-         the statistics with the NHD+ catchments.
-Params: sumDict - dictionary with all statistics and accumulated statistics for the catchments
-        NHDPath - path to the catchments
-        path - directory to write the CSV to
-        name - desired filename (must end with .csv)
-        rasVals - list of unique values for classed data (used as column names)
-Returns: None
-"""
-def writeShapefile(sumDict, NHDPath, path, name, rasVals, catchID):
-    # Read catchments as geodataframe -- used to join with final results
-    if os.path.isfile(NHDPath):
-        NHD = gpd.read_file(NHDPath) #read shapefile as geopandas df
-        NHD = NHD[[catchID, 'geometry']] #was featureid
-        print("Writing Shapefile...")
-        if name[-4:] == ".shp":
-            f = os.path.join(path, name)
-            if len(rasVals) == 0: #continous data
-                rasVals = ['Stat', 'Area']
-            cols = [0] * (len(rasVals) * 2) #list to store catchment stat and acc stats
-            for idx, v in enumerate(rasVals):
-                cols[idx] = str(rasVals[idx])
-                cols[idx+len(rasVals)] = "Ws_"+str(rasVals[idx])
-            df = pd.DataFrame.from_dict(sumDict, orient='index', columns=cols)
-            df[catchID] = df.index
-            NHD = NHD.merge(df, on=[catchID], how='left')
-            NHD.to_file(f)
-        else:
-            print("Output File Must be of Type .shp", name)
-    else:
-        print("Invalid File Path: ", NHDPath)
-        print("No catchment shapefile to join with data")
+def writeShapefile(NHDPath, path, name, data, catchID):
+    """
+    Method: writeShapefile()
+    Purpose: Produce the catchment statistics and accumulated statistics as a shapefile. Joins
+            the statistics with the catchments.
+    Params: NHDPath - path to the catchments
+            path - directory to write the CSV to
+            name - desired filename
+            data - dataframe of statistics
+            catchID - name of catchment ID field to merge on
+    Returns: None
+    """
+    NHD = gpd.read_file(NHDPath) #read shapefile as geopandas df
+    NHD = NHD[[catchID, 'geometry']] #was featureid
+    #merge data
+    NHD = NHD.merge(data, on=[catchID], how='right') #right instead of left to exclude writing catchments with no data
+    f = os.path.join(path, name+'.shp')
+    NHD.to_file(f)
 
+##########################################################################################################
+################################### HELPERS ##############################################################
+##########################################################################################################
+def validateInput(rasType, statType, outputCSV, outputSHP, OUTPUT_PATH, convFact, direction, NHD_SHP, RAS):
+    """
+    Method: validateInput()
+    Purpose: Ensure user input is valid before running accumulation.
+    """
+    valid, outFlag, writeFlag = True, True, False
+    if rasType not in [0,1]:
+        print("INPUT ERROR: rasType must be either 0 or 1\n\t0: Continuous\n\t1: Categorical")
+        valid = False
+    if rasType == 0 and statType not in ["MIN", "MAX", "MEDIAN", "MEAN", "SUM"]:
+        print("INPUT ERROR: statType for a continuous raster must be\n\tMIN, MAX, MEDIAN, MEAN, or SUM")
+        valid = False
+    if not os.path.isdir(OUTPUT_PATH):
+        try:
+            os.mkdir(OUTPUT_PATH)
+            print(f"Created Output Directory: {OUTPUT_PATH}")
+        except:
+            print(f"INPUT ERROR: OUTPUT_PATH directory does not exist and failed to be created\n\t{OUTPUT_PATH}")
+            valid = False
+            outFlag = False
+    if len(outputCSV) > 0:
+        writeFlag = True
+        if '.' in outputCSV: # remove .csv
+            print(f"INPUT ERROR: outputCSV file includes extension\n\t{outputCSV}")
+            valid = False
+        elif outFlag:
+            if os.path.isfile(os.path.join(OUTPUT_PATH, outputCSV+'.csv')):
+                print(f"WARNING: output csv file already exists and will be overwritten\n\t{os.path.join(OUTPUT_PATH, outputCSV+'.csv')}")
+    if len(outputSHP) > 0:
+        writeFlag = True
+        if '.shp' in outputSHP: # remove .csv
+            print(f"INPUT ERROR: outputSHP file includes extension\n\t{outputSHP}")
+            valid = False
+        elif outFlag:
+            if os.path.isfile(os.path.join(OUTPUT_PATH, outputSHP+'.shp')):
+                print(f"WARNING: output shapefile already exists and will be overwritten\n\t{os.path.join(OUTPUT_PATH, outputSHP+'.shp')}")
+    if not writeFlag:
+        print("INPUT ERROR: outputCSV and outputSHP are blank\n\tUser must specificy output file name for at least one")
+        valid = False
+    if convFact <= 0:
+        print("INPUT ERROR: convFact must be greater than 0\n\tNote: enter 1 for no conversion")
+        valid = False
+    if direction not in ['upstream', 'downstream']:
+        print("INPUT ERROR: direction must be upstream or downstream")
+        valid = False
+    if not os.path.isfile(NHD_SHP):
+        print(f"INPUT ERROR: NHD_SHP does not exist\n\t{NHD_SHP}")
+        valid = False
+    if not os.path.isfile(RAS):
+        print(f"INPUT ERROR: RAS does not exist\n\t{RAS}")
+        valid = False
+    if not valid:
+        sys.exit(1)
 
-"""
-Method: printTime()
-Purpose: Accept previous time and calculate difference with current time. Print message and time difference
-         with approopriate time metric (sec, min, or hours).
-Params: message - string containing message to print before time elapsed
-        prevTime - float of time.time() of time before the running the code you want to time
-Returns: curTime - current time used for time elapsed calculation
-"""
 def printTime(message, prevTime):
+    """
+    Method: printTime()
+    Purpose: Accept previous time and calculate difference with current time. Print message and time difference
+            with approopriate time metric (sec, min, or hours).
+    Params: message - string containing message to print before time elapsed
+            prevTime - float of time.time() of time before the running the code you want to time
+    Returns: curTime - current time used for time elapsed calculation
+    """
     curTime = float(time.time())
     timeDif = float(curTime - prevTime)
     t = ' sec'
@@ -393,22 +571,33 @@ def printTime(message, prevTime):
             t = ' hours'
     print(message, str(timeDif), t, "\n")
     return curTime
+    
 
 """
 Global variables needing user input
 rasType: 0 (continuous raster) or 1 (categorical raster)
 statType: "MIN", "MAX", "MEDIAN", "MEAN", or "SUM" (choose one statistic for continuous raster only)
-outputType: [1, 1] (first index is output type CSV and second is shapefile; 0 is do NOT write and 1 is write)
+outputCSV: string name for accumulated output in CSV format - do not include .csv extension
+outputSHP: string name for accumulated output in shapefile format - do not include .shp extension
+OUTPUT_PATH: string path to folder to write output to
 convFact: conversion factor to apply to accumulated values; recommend output be in sq km or hectares
 catchIDName: name of the columns denoting the unique catchment IDs
 toFromPlusNames: list of length to denoting the column names for the to/from columns;
                  for NHD high res data ['ToNHDPID', 'FromNHDPID']
                  for ecoSHEDs ['NextDownID', 'FEATUREID'] 
 """
-rasType = 0
-statType = "SUM"
-outputType = [1, 1]
-convFact = 1e-6 # this value will be multiplied by cell size squared automatically later; this example converts m2 to km2
+rasType = 1
+statType = ""
+outputCSV = "Potomac_Eco_NLCD19_downstream_20211019"
+outputSHP = "Potomac_Eco_NLCD19_downstream_20211019"
+OUTPUT_PATH = r"G:/ImageryServer/usgs_sc/smcdonald/NHDv2_Agg/24k_Beta/ecoSheds/Potomac_20211019/" #/media/imagery
+convFact =  1 / 4046.83 # square meters to acres
+direction = 'downstream' # 'upstream'
+#Data Paths
+NHD_SHP = r"G:/ImageryServer/usgs_sc/smcdonald/NHDv2_Agg/24k_Beta/ecoSheds/Catchments_POT.shp" #/media/imagery  /spatial_02/Catchments02.shp
+RAS = r"G:/ImageryServer/NLCD/2019_Edition_July2021/NLCD_landcover_2019_release_all_files_20210604/nlcd_2019_land_cover_l48_20210604/nlcd_2019_land_cover_l48_20210604.img"
+
+# These will remain constant for ecoSHEDs data
 catchIDName = 'FEATUREID'
 toFromPlusNames = ['NextDownID', 'FEATUREID'] 
 
@@ -417,56 +606,57 @@ Method: main
 Purpose: Call functions
 """
 if __name__ == "__main__":
-    #Data Paths
-    NHD_SHP = r"" #path to catchments shapefile
-    RAS = r"" #path to raster (tif) to summarize
-    OUTPUT_PATH = r"" #path to location to write accumulated data (do not include file name)
-
+    # Check user input
+    validateInput(rasType, statType, outputCSV, outputSHP, OUTPUT_PATH, convFact, direction, NHD_SHP, RAS)
+    print("Validated Input")
     #Read input data
     startTime = float(time.time())
     sumDict = {}
-    upstream = {} #build once - code loop to run multiple datasets
+    network = {} #build once - code loop to run multiple datasets
     PLUS, shapes = readDataEco(NHD_SHP, catchIDName)
     prevTime = printTime('Read EcoSHEDs Time', startTime)
     invalidData = False
     if len(PLUS) == 0:
         invalidData = True
         print("No records in PLUS - exiting")
-    #Generate upstream network
+    if len(shapes) == 0:
+        invalidData = True
+        print("No catchment geometries in dictionary - exiting")
+    #Generate network
     if not invalidData:
-        allUp = generateUpstream(PLUS, toFromPlusNames)
-        prevTime = printTime('Generate Upstream Time', prevTime)
-        if len(allUp) == 0:
+        dirLinks = generateDirectLinks(PLUS, toFromPlusNames, direction)
+        prevTime = printTime('Generate Network Time', prevTime)
+        if len(dirLinks) == 0:
             invalidData = True
-            print("Generate Upstream failed - no records in allUp - exiting")
+            print("Generate Network failed - no records in dirLinks - exiting")
     if not invalidData:     
-        cellSize, rasVals, noData = readRas(RAS, rasType)
+        cellSize, noData = readRas(RAS)
+        print("Cell Size: ", cellSize)
+        print("No Data: ", noData)
         prevTime = printTime('Read Raster Information Time', prevTime)
         if cellSize == 0:
             invalidData = True
             print("Cell size is 0 - exiting")
         else:
-            if len(shapes) == 0:
+            sumDict = aggregateRas_mp(shapes, statType, RAS, rasType, convFact)
+            prevTime = printTime('Summarize Raster Information Time', prevTime)
+            if len(sumDict) == 0:
                 invalidData = True
-                print("No catchment geometries in dictionary - exiting")
+                print("No Catchment Summaries in sumDict - exiting")
             else:
-                sumDict = aggregateRas(shapes, statType, RAS, cellSize, rasType, rasVals, noData)
-                prevTime = printTime('Summarize Raster Information Time', prevTime)
-                if len(sumDict) == 0:
-                    invalidData = True
-                    print("No Catchment Summaries in sumDict - exiting")
-                else:
-                    convFact = convFact * cellSize * cellSize
-                    sumDict, upstream = accumulate(rasType, rasVals, allUp, upstream, sumDict, convFact) #return upstream - only create once - future update loop ras summaries
-                    prevTime = printTime('Accumulate Time', prevTime)
+                convFact = convFact * cellSize * cellSize
+                print("Conversion Factor: ", convFact)
+                sumDict, network = accumulate_mp(rasType, PLUS, dirLinks, network, sumDict, convFact, direction, toFromPlusNames)
+                prevTime = printTime('Accumulate Time', prevTime)
 
     #write out data
     if not invalidData:
-        if outputType[0] == 1:
-            writeTable(sumDict, OUTPUT_PATH, "POT_IMP_ECO_021021.csv", rasVals, catchIDName)
-        if outputType[1] == 1:
-            writeShapefile(sumDict, NHD_SHP, OUTPUT_PATH, "POT_IMP_ECO_021021.shp", rasVals, catchIDName)
-
+        data = createTable(sumDict, catchIDName, rasType, statType)
+        if len(outputCSV) > 0:
+            csv_path = os.path.join(OUTPUT_PATH, outputCSV+'.csv')
+            data.to_csv(csv_path, index=False)
+        if len(outputSHP) > 0:
+            writeShapefile(NHD_SHP, OUTPUT_PATH, outputSHP, data, catchIDName)
     prevTime = printTime('Write Results Time', prevTime)
 
     printTime('Total Time', startTime)
