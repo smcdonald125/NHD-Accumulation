@@ -258,7 +258,7 @@ def accumulate_values(sumDict, toSum, convFact, curID, rasType):
         for cID in toSum:
             if cID in sumDict: #check that network catchment is in the dict
                 tmp = sumDict[cID] #get list of all stats for upstream catchment
-                for idx in range(numClasses): #for each class -- sum the data
+                for idx in range(2): #for stat and area - sum
                     sums[idx] += tmp[idx]
         for i in range(len(sums)):
             sums[i] = sums[i] * convFact #convert data
@@ -586,16 +586,16 @@ toFromPlusNames: list of length to denoting the column names for the to/from col
                  for NHD high res data ['ToNHDPID', 'FromNHDPID']
                  for ecoSHEDs ['NextDownID', 'FEATUREID'] 
 """
-rasType = 1
-statType = ""
-outputCSV = "Potomac_Eco_NLCD19_downstream_20211019"
-outputSHP = "Potomac_Eco_NLCD19_downstream_20211019"
+rasType = 0
+statType = "SUM"
+outputCSV = "Potomac_Eco_INR17_10m_upstream_20211019"
+outputSHP = "Potomac_Eco_INR17_10m_upstream_20211019"
 OUTPUT_PATH = r"G:/ImageryServer/usgs_sc/smcdonald/NHDv2_Agg/24k_Beta/ecoSheds/Potomac_20211019/" #/media/imagery
 convFact =  1 / 4046.83 # square meters to acres
-direction = 'downstream' # 'upstream'
+direction = 'upstream' # 'upstream'
 #Data Paths
 NHD_SHP = r"G:/ImageryServer/usgs_sc/smcdonald/NHDv2_Agg/24k_Beta/ecoSheds/Catchments_POT.shp" #/media/imagery  /spatial_02/Catchments02.shp
-RAS = r"G:/ImageryServer/NLCD/2019_Edition_July2021/NLCD_landcover_2019_release_all_files_20210604/nlcd_2019_land_cover_l48_20210604/nlcd_2019_land_cover_l48_20210604.img"
+RAS = r"G:/ImageryServer/1m_LU_2017/version1/phase6_10m/INR_2017_10m.tif"
 
 # These will remain constant for ecoSHEDs data
 catchIDName = 'FEATUREID'
