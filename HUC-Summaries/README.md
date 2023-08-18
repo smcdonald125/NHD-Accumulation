@@ -37,5 +37,7 @@ This script generates 3 output files, all stored in the same directory as the in
 
 # Contact
 Author: Sarah M. McDonald, Geographer
+
 Affiliations: U.S. Geological Survey, Lower Mississippi-Gulf Water Science Center. Chesapeake Bay Program.
+
 Contact: smcdonald@chesapeakebay.net
